@@ -119,9 +119,9 @@
 
 <AppBar>
     {#snippet lead()}
-        {workflow["id"]}
+        {workflow ? workflow["id"] : ""}
     {/snippet}
-    {workflow["level"]}
+    {workflow && workflow["level"]}
     {#snippet trail()}
         <p>{page + 1} / {workflows?.length}</p>
         <FileUpload name="example-button" accept="application/json" onFileChange={load_json} maxFiles={1}>
