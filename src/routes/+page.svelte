@@ -1,12 +1,10 @@
 <script lang="ts">
-    import { marked } from "marked";
-    import DOMPurify from "dompurify";
     import { onDestroy } from "svelte";
-    import { Segment, AppBar, FileUpload } from "@skeletonlabs/skeleton-svelte";
-    import Prompt1 from "./prompt1.svelte";
-    import Prompt2 from "./prompt2.svelte";
+    import { AppBar, FileUpload, Segment } from "@skeletonlabs/skeleton-svelte";
     import IconUpload from 'lucide-svelte/icons/upload';
     import IconDownload from 'lucide-svelte/icons/download';
+    import RatingView from "$lib/components/RatingView.svelte";
+    import CompareView from "$lib/components/CompareView.svelte";
 
     interface Workflow {
         id: string;
@@ -15,9 +13,15 @@
         answer: string;
         prompt: string;
         llm_response: string;
+        bleu_score: number;
+        judge_score: number;
     }
 
     let workflows: undefined | Workflow[] = $state(
+        JSON.parse(localStorage.getItem("workflows") || "{}"),
+    );
+
+    let all_workflows: undefined | Workflow[] = $state(
         JSON.parse(localStorage.getItem("workflows") || "{}"),
     );
 
@@ -26,25 +30,15 @@
         workflows
             ? workflows[page]
             : {
-                  id: "",
-                  level: "",
-                  judgement: "",
-                  answer: "",
-                  prompt: "",
-                  llm_response: "",
-              },
-    );
-    let workflow_yaml = $derived.by(() =>
-        workflow
-            ? DOMPurify.sanitize(
-                  marked.parse(
-                      workflow["llm_response"].replace(
-                          /^[\u200B\u200C\u200D\u200E\u200F\uFEFF]/,
-                          "",
-                      ),
-                  ) as string,
-              )
-            : "",
+                id: "",
+                level: "",
+                judgement: "",
+                answer: "",
+                prompt: "",
+                llm_response: "",
+                bleu_score: 0,
+                judge_score: 0,
+            },
     );
 
     let load_json = async (e: any) => {
@@ -56,49 +50,32 @@
 
         localStorage.setItem("workflows", JSON.stringify(json.slice(0, 100)));
 
-        workflows = json;
-    };
+        const filtered_json = json.slice(950, 950*2)
+        .filter((w: any) => w["llm_response"].trim().endsWith("```"))
+        .sort((a: any, b: any) => {
+            if (a["id"] < b["id"]) return 1;
+            if (a["id"] > b["id"]) return -1;
+            if (a["level"] < b["level"]) return 1;
+            if (a["level"] > b["level"]) return -1
+            return 0;
+        });
 
-    // Prompt 1
-    let score = $state("");
-
-    // Prompt 2
-    let validity = $state("");
-    let events = $state("");
-    let jobs = $state("");
-    let steps = $state("");
-    let dependencies = $state("");
-
-    const total: any = JSON.parse(localStorage.getItem("total") || "{}");
-
-    const commit = () => {
-        total[workflow["id"]] = {
-            score: score,
-            validity: validity,
-            events: events,
-            jobs: jobs,
-            steps: steps,
-            dependencies: dependencies,
-        };
-        localStorage.setItem("total", JSON.stringify(total));
+        workflows = filtered_json;
+        all_workflows = filtered_json;
     };
 
     function handleShortcut(event: KeyboardEvent) {
         const direction = event.key === "+" ? 1 : event.key === "-" ? -1 : 0;
         event.preventDefault();
-        commit();
+        // commit();
         if (
             workflows &&
             page + direction < workflows.length &&
             page + direction >= 0
         ) {
+            view == "rating" && rating_view?.commit();
             page += direction;
-            score = total[workflow["id"]]?.score;
-            validity = total[workflow["id"]]?.validity;
-            events = total[workflow["id"]]?.events;
-            jobs = total[workflow["id"]]?.jobs;
-            steps = total[workflow["id"]]?.steps;
-            dependencies = total[workflow["id"]]?.dependencies;
+            view == "rating" && rating_view?.updateView();
         }
     }
     document.addEventListener("keyup", handleShortcut);
@@ -108,22 +85,77 @@
     });
 
     const downloadScores = () => {
-        const blob = new Blob([JSON.stringify(total)], {
+        const blob = new Blob([JSON.stringify(rating_view?.getTotal())], {
             type: "application/json",
         });
         const url = window.URL.createObjectURL(blob);
         window.open(url);
         URL.revokeObjectURL(url);
     };
+
+    let rating_view: RatingView | null = $state(null);
+
+    // svelte-ignore state_referenced_locally
+    let workflow_id = $state(workflow["id"]);
+
+    let edit_id = $state(false);
+
+    let find_id = () => {
+        page = workflows?.findIndex((w) => w["id"] === workflow_id) || page;
+        edit_id = false;
+    };
+
+    let filter_level = (level: string) => {
+        if (level === "") {
+            workflows = all_workflows;
+        } else {
+            workflows = all_workflows?.filter((w) => w["level"] === level);
+        }
+    };
+
+    let view = $state("rating");
 </script>
 
 <AppBar>
     {#snippet lead()}
-        {workflow ? workflow["id"] : ""}
+    {#if edit_id}
+    <input class="input" type="text" bind:value={workflow_id} />
+    <button class="btn preset-filled" onclick={find_id}>
+        Find
+    </button>
+    {:else}
+        <button class="btn preset-tonal-surface" onclick={() => edit_id = true}>
+            {workflow ? workflow["id"] : ""}
+        </button>
+    {/if}
+    <select class="select" onchange={(e) => filter_level((e.target as HTMLSelectElement).value)}>
+        <option value="">All</option>
+        <option value="level1">1</option>
+        <option value="level2">2</option>
+        <option value="level3">3</option>
+        <option value="level4">4</option>
+        <option value="level5">5</option>
+    </select>
     {/snippet}
-    {workflow && workflow["level"]}
+    <div class="flex items-center justify-center pt-2" style="font-size: 1.2em;">
+        {workflow && workflow["level"]} -- BLEU score {workflow && workflow["bleu_score"].toFixed(2)}
+        {#if view != "rating"}
+        -- LLM Judge {workflow && workflow["judge_score"]}
+        {/if}
+    </div>
+
     {#snippet trail()}
-        <p>{page + 1} / {workflows?.length}</p>
+        <div class="flex items-center">
+            <p style="font-size: 1.2em;">{page + 1} / {workflows?.length}</p>
+        </div>
+        <div class="btn-group preset-outlined-surface-200-800 flex-col p-2 md:flex-row">
+            <button class="btn btn-sm {view == "rating" && "preset-filled"}" onclick={() => view = "rating"}>
+                Rating
+            </button>
+            <button class="btn btn-sm {view == "compare" && "preset-filled"}" onclick={() => view = "compare"}>
+                Compare
+            </button>
+        </div>
         <FileUpload name="example-button" accept="application/json" onFileChange={load_json} maxFiles={1}>
           <button class="btn btn-icon">
             <IconUpload class="size-4" />
@@ -135,95 +167,8 @@
     {/snippet}
 </AppBar>
 
-{#if workflow}
-    <form class="grid grid-cols-2 gap-8 p-4" oninput={commit}>
-        <div>
-            <p>Prompt:</p>
-            <p>{workflow["prompt"]}</p>
-        </div>
-        <div>
-            <p>Workflow:</p>
-            <p>{@html workflow_yaml}</p>
-        </div>
-        <div class="p-4 card border-surface-200-800 border-[1px]">
-            <Prompt1 />
-        </div>
-        <div class="flex items-center pt-8">
-            <div class="mr-4">
-                <p>Strongly Disagree</p>
-            </div>
-            <Segment name="align" bind:value={score}>
-                <Segment.Item value="1">1</Segment.Item>
-                <Segment.Item value="2">2</Segment.Item>
-                <Segment.Item value="3">3</Segment.Item>
-                <Segment.Item value="4">4</Segment.Item>
-                <Segment.Item value="5">5</Segment.Item>
-            </Segment>
-            <div class="ml-4">
-                <p>Strongly Agree</p>
-            </div>
-        </div>
-        <div class="card border-surface-200-800 border-[1px]">
-            <div class="m-4">
-                <Prompt2 />
-            </div>
-        </div>
-        <div>
-            <div class="grid">
-                <div class="flex flex-row items-center my-2">
-                    <div class="mr-4">
-                        <p>Validity:</p>
-                    </div>
-                    <Segment name="align" bind:value={validity}>
-                        <Segment.Item value="1">Valid</Segment.Item>
-                        <Segment.Item value="2"
-                            >Valid with minor errors</Segment.Item
-                        >
-                        <Segment.Item value="3"
-                            >Mostly valid with major errors</Segment.Item
-                        >
-                        <Segment.Item value="4">Invalid</Segment.Item>
-                    </Segment>
-                </div>
-                <div class="flex flex-row items-center my-2">
-                    <div class="mr-4">
-                        <p>Requested events present:</p>
-                    </div>
-                    <Segment name="align" bind:value={events}>
-                        <Segment.Item value="1">Yes</Segment.Item>
-                        <Segment.Item value="0">No</Segment.Item>
-                    </Segment>
-                </div>
-                <div class="flex flex-row items-center my-2">
-                    <div class="mr-4">
-                        <p>Requested jobs present:</p>
-                    </div>
-                    <Segment name="align" bind:value={jobs}>
-                        <Segment.Item value="1">Yes</Segment.Item>
-                        <Segment.Item value="0">No</Segment.Item>
-                    </Segment>
-                </div>
-                <div class="flex flex-row items-center my-2">
-                    <div class="mr-4">
-                        <p>Requested steps present:</p>
-                    </div>
-                    <Segment name="align" bind:value={steps}>
-                        <Segment.Item value="1">Yes</Segment.Item>
-                        <Segment.Item value="0">No</Segment.Item>
-                        <Segment.Item value="-">Not requested</Segment.Item>
-                    </Segment>
-                </div>
-                <div class="flex flex-row items-center my-2">
-                    <div class="mr-4">
-                        <p>Requested dependencies present:</p>
-                    </div>
-                    <Segment name="align" bind:value={dependencies}>
-                        <Segment.Item value="1">Yes</Segment.Item>
-                        <Segment.Item value="0">No</Segment.Item>
-                        <Segment.Item value="-">Not requested</Segment.Item>
-                    </Segment>
-                </div>
-            </div>
-        </div>
-    </form>
+{#if view == "rating"}
+<RatingView bind:this={rating_view} {workflow} />
+{:else}
+<CompareView workflow={workflow} />
 {/if}
